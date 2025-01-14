@@ -1,0 +1,44 @@
+version: 1
+send_anonymous_usage_stats: true
+project_id: "tap-cm360"
+default_environment: test
+environments:
+- name: test
+plugins:
+  extractors:
+    - name: tap-cm360
+      namespace: tap_cm360
+      pip_url: "-e ."  # or your repo path, or something like '-e .'
+      # Include needed dependencies:
+      pip_dependencies:
+        - google-api-python-client
+        - oauth2client
+        - httplib2
+        - csvkit  # optional, if you want advanced CSV usage
+      config:
+        profile_id: "9840205"
+        client_secrets_file: "/Users/peter/work/uow-meltano/secret.json"
+        credential_store_file: "/Users/peter/work/uow-meltano/credentials/app.json"
+        oauth_scopes:
+          - "https://www.googleapis.com/auth/dfareporting"
+        start_date: "2025-01-14"
+
+  loaders:
+  - name: target-jsonl
+    variant: andyh1203
+    pip_url: target-jsonl
+  - name: target-bigquery
+    variant: z3z1ma
+    pip_url: git+https://github.com/z3z1ma/target-bigquery.git
+    config:
+      dataset: ${BQ_DATASET}
+      project: uowaikato-main
+      location: australia-southeast1
+      denormalized: false
+      schema_resolver_version: 2
+      column_name_transforms:
+        add_underscore_when_invalid: true
+        lower: true
+        snake_case: true
+      fail_fast: false
+      method: ${BQ_METHOD}
