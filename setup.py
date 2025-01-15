@@ -21,11 +21,11 @@ setup(
     packages=find_packages(include=["tap_cm360", "tap_cm360.*"]),
     python_requires=">=3.9",
     install_requires=[
-        "singer-sdk~=0.43.1",
-        "requests~=2.32.3",
-        "oauth2client>=4.1.3",
-        "google-api-python-client>=2.93.0",
-        "httplib2>=0.21.0",
+        "singer-sdk",
+        "requests",
+        "oauth2client",
+        "google-api-python-client",
+        "httplib2",
     ],
     extras_require={
         "s3": ["fs-s3fs~=1.1.1"],
