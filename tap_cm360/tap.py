@@ -23,8 +23,6 @@ from oauth2client import client
 
 from tap_cm360.streams import CM360ReportStream
 
-
-
 # ------------------------------
 # Main Tap class
 # ------------------------------
@@ -41,14 +39,6 @@ class Tapcm360(Tap):
                 "type": "string",
                 "description": "The CM360 user profile ID."
             },
-            "client_secrets_file": {
-                "type": "string",
-                "description": "Path to OAuth2 client secrets JSON."
-            },
-            "credential_store_file": {
-                "type": "string",
-                "description": "Path to store (and reuse) OAuth2 credentials."
-            },
             "oauth_scopes": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -62,12 +52,10 @@ class Tapcm360(Tap):
                 "type": "string",
                 "format": "date",
                 "description": "The date until which you'd like to replicate data for all incremental streams, in the format YYYY-MM-DD."
-            }   
+            }
         },
         "required": [
             "profile_id",
-            "client_secrets_file",
-            "credential_store_file",
             "start_date",
         ]
     }

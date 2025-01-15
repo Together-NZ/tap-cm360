@@ -10,35 +10,14 @@ from googleapiclient.http import MediaIoBaseDownload  # Correct import
 from oauth2client.file import Storage
 from oauth2client import tools, client
 import httplib2
-from singer_sdk.streams import RESTStream
+from singer_sdk.streams import Stream
 import google.auth.credentials
 logger = logging.getLogger(__name__)
 from google.auth.transport.requests import Request
-
-class GoogleOAuthAuthenticator:
-    """Custom authenticator using Google OAuth login token."""
-
-    def __init__(self, google_account):
-        """Initialize with the relevant Google account's OAuth token.
-
-        :param google_account: The Google account passed from the tap that provides the OAuth token.
-        """
-        # Assume that the google_account has 'access_token' that can be used directly.
-        self.credentials = google.auth.credentials.Credentials.from_authorized_user_info(
-            google_account
-        )
-
-        if not self.credentials.valid:
-            self.credentials.refresh(Request())
-
-    def __call__(self, request):
-        """Add Authorization header."""
-        if not self.credentials.valid:
-            self.credentials.refresh(Request())
-        request.headers["Authorization"] = f"Bearer {self.credentials.token}"
-        return request
-
-class cm360Stream(RESTStream):
+from google.cloud import secretmanager
+import tempfile
+from tap_cm360.auth import authorize_in_memory
+class cm360Stream(Stream):
     """Stream class for Campaign Manager 360 (CM360) API."""
     
     name = "tap-cm360"
@@ -54,109 +33,41 @@ class cm360Stream(RESTStream):
         """Base URL for CM360 API."""
         return f"https://www.googleapis.com/auth/dfareporting/{self.version}"
 
-    def prepare_request_payload(self, context: Optional[Dict[str, Any]], next_page_token: Optional[Any] = None) -> Optional[Dict[str, Any]]:
-        """Prepare the request payload for POST requests."""
-        request = {
-            'dimensionName': 'campaign',
-            'endDate': context['criteria']['dateRange']['endDate'],
-            'startDate': context['criteria']['dateRange']['startDate']
-        }
-        return request
+    def fetch_secret_from_secret_manager(self, secret_id, project_id, version_id="1"):
+        """
+        Fetch a secret (JSON content) from Google Secret Manager.
+        """
+        client = secretmanager.SecretManagerServiceClient()
+        secret_name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
+        response = client.access_secret_version(request={"name": secret_name})
+        return response.payload.data.decode("UTF-8")
+    def get_flow_from_client_secrets(self, secret_id, project_id, scopes):
+        """
+        Create a flow object using client secrets fetched from Google Secret Manager.
+        """
+        # Fetch the secret
+        secret_content = self.fetch_secret_from_secret_manager(secret_id, project_id)
 
+        # Write the secret to a temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as temp_file:
+            temp_file.write(secret_content.encode())
+            temp_file_path = temp_file.name
+
+        # Create a flow object using the temporary file
+        flow = client.flow_from_clientsecrets(
+            filename=temp_file_path,
+            scope=scopes
+        )
+
+        return flow
     def generate_credential(self, context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Generate OAuth credentials."""
-        path_to_client_secrets_file = 'secret.json'
-        OAUTH_SCOPES = ['https://www.googleapis.com/auth/dfareporting']
-        CREDENTIAL_STORE_FILE = 'credentials/app.json'
+        config = self.config
+            # Example usage
+        SECRET_ID = "airflow-variables-meltano-cm360"
+        PROJECT_ID = "739679429225"
+        SCOPES = ["https://www.googleapis.com/auth/dfareporting"]
+        secret_content = self.fetch_secret_from_secret_manager(SECRET_ID, PROJECT_ID)
+        return authorize_in_memory(secret_content, SCOPES)
 
-        # Set up authentication
-        flow = client.flow_from_clientsecrets(path_to_client_secrets_file, scope=OAUTH_SCOPES)
-        storage = Storage(CREDENTIAL_STORE_FILE)
-        credentials = storage.get()
 
-        if credentials is None or credentials.invalid:
-            credentials = tools.run_flow(flow, storage, tools.argparser.parse_known_args()[0])
-        
-        return credentials
-
-    def download_report(self, service, report_id, file_id):
-        """Download the report file to an in-memory file object."""
-        request = service.files().get_media(reportId=report_id, fileId=file_id)
-        memory_file = io.BytesIO()
-
-        downloader = MediaIoBaseDownload(memory_file, request)
-
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                logger.info(f"Download {int(status.progress() * 100)}% complete.")
-
-        memory_file.seek(0)  # Rewind the file before reading
-        return memory_file
-
-    def generate_service(self, context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Generate an authenticated service object."""
-        credentials = self.generate_credential(context)
-        http = credentials.authorize(httplib2.Http())
-        return build('dfareporting', 'v4', http=http)
-
-    def parse_response(self, context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Parse the report response."""
-        service = self.generate_service(context)
-        request = self.prepare_request_payload(context)
-
-        values = service.dimensionValues().query(profileId=context['profile_id'], body=request).execute()
-
-        report = context['report_path']
-
-        fields = service.reports().compatibleFields().query(
-            profileId=context['profile_id'], body=report).execute()
-
-        report_fields = fields['reportCompatibleFields']
-
-        if report_fields['dimensions']:
-            report['criteria']['dimensions'].append({
-                'name': report_fields['dimensions'][0]['name']
-            })
-        elif report_fields['metrics']:
-            report['criteria']['metricNames'].append(
-                report_fields['metrics'][0]['name'])
-
-        inserted_report = service.reports().insert(profileId=context["profile_id"], body=report).execute()
-
-        report_file = service.reports().run(profileId=context["profile_id"], reportId=inserted_report['id']).execute()
-        report_file_id = report_file['id']
-
-        return inserted_report, report_file_id
-
-    def request_records(self, context: Optional[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
-        """Download the report and parse the CSV content."""
-        MAX_RETRY_ELAPSED_TIME = 3600
-        initial_sleep = 10
-
-        sleep = initial_sleep
-        start_time = time.time()
-        service = self.generate_service(context)
-        inserted_report, report_file_id = self.parse_response(context)
-
-        while True:
-            report_file = service.files().get(reportId=inserted_report['id'], fileId=report_file_id).execute()
-            status = report_file['status']
-
-            if status == 'REPORT_AVAILABLE':
-                logger.info(f'File status is {status}, ready to download.')
-                break
-            elif status != 'PROCESSING':
-                logger.error(f'File status is {status}, processing failed.')
-                return
-            elif time.time() - start_time > MAX_RETRY_ELAPSED_TIME:
-                logger.error('File processing deadline exceeded.')
-                return
-
-            sleep = self.next_sleep_interval(sleep)
-            logger.info(f'File status is {status}, sleeping for {sleep} seconds.')
-            time.sleep(sleep)
-
-        return self.download_report(service, inserted_report["id"], report_file_id)
 

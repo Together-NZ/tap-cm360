@@ -20,7 +20,8 @@ from jsonschema import validate
 import tempfile
 from google.cloud import secretmanager
 from oauth2client import client
-class CM360ReportStream(Stream):
+from tap_cm360.client import cm360Stream
+class CM360ReportStream(cm360Stream):
     """Streamer that downloads and parses a CM360 CSV report."""
 
     name = "cm360_report_stream"
@@ -51,61 +52,10 @@ class CM360ReportStream(Stream):
         th.Property("impressions", th.IntegerType, description="Number of impressions")
     ).to_dict()
 
-    def fetch_secret_from_secret_manager(self, secret_id, project_id, version_id="1"):
-        """
-        Fetch a secret (JSON content) from Google Secret Manager.
-        """
-        client = secretmanager.SecretManagerServiceClient()
-        secret_name = f"projects/{project_id}/secrets/{secret_id}/versions/{version_id}"
-        response = client.access_secret_version(request={"name": secret_name})
-        return response.payload.data.decode("UTF-8")
-
-    def get_flow_from_client_secrets(self, secret_id, project_id, scopes):
-        """
-        Create a flow object using client secrets fetched from Google Secret Manager.
-        """
-        # Fetch the secret
-        secret_content = self.fetch_secret_from_secret_manager(secret_id, project_id)
-
-        # Write the secret to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as temp_file:
-            temp_file.write(secret_content.encode())
-            temp_file_path = temp_file.name
-
-        # Create a flow object using the temporary file
-        flow = client.flow_from_clientsecrets(
-            filename=temp_file_path,
-            scope=scopes
-        )
-
-        return flow
-
-
     def get_records(self, context):
         """Main function to create/run/download the CM360 report and yield row data."""
         config = self.config
-            # Example usage
-        SECRET_ID = "airflow-variables-meltano-cm360"
-        PROJECT_ID = "739679429225"
-        SCOPES = ["https://www.googleapis.com/auth/dfareporting"]
-
-        flow = self.get_flow_from_client_secrets(SECRET_ID, PROJECT_ID, SCOPES)
-        # 1. OAuth2 Flow using oauth2client
-        flow = client.flow_from_clientsecrets(
-            filename=config["client_secrets_file"],
-            scope=config["oauth_scopes"]
-        )
-        storage = Storage(config["credential_store_file"])
-        credentials = storage.get()
-        if credentials is None or credentials.invalid:
-            # Will prompt for OAuth if running interactively
-            credentials = tools.run_flow(
-                flow,
-                storage,
-                tools.argparser.parse_known_args()[0]
-            )
-        http = credentials.authorize(httplib2.Http())
-
+        credentials,http = self.generate_credentials(context)
         # 2. Build CM360 (a.k.a. DFA Reporting) service
         service = build("dfareporting", "v4", http=http)
 
