@@ -1,9 +1,9 @@
 version: 1
 send_anonymous_usage_stats: true
 project_id: "tap-cm360"
-default_environment: test
+default_environment: prod
 environments:
-- name: test
+- name: prod
 plugins:
   extractors:
     - name: tap-cm360
