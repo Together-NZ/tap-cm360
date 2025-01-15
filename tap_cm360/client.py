@@ -24,8 +24,9 @@ class cm360Stream(Stream):
     records_jsonpath = "$[*]"  # Adjust based on API's response structure
     next_page_token_jsonpath = None  # Assuming no pagination
 
-    def __init__(self,  name=None, schema=None, path=None):
-        super().__init__( name, schema)
+
+    def __init__(self, tap, name=None, schema=None, path=None):
+        super().__init__(tap, name, schema)
         self.version = 'v4'
 
     @property
