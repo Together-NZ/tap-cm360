@@ -25,7 +25,7 @@ class cm360Stream(Stream):
     next_page_token_jsonpath = None  # Assuming no pagination
 
     def __init__(self, tap, name=None, schema=None, path=None):
-        super().__init__(tap, name, schema, path)
+        super().__init__(tap, name, schema)
         self.version = 'v4'
 
     @property
