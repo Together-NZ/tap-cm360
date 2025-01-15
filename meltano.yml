@@ -8,7 +8,7 @@ plugins:
   extractors:
     - name: tap-cm360
       namespace: tap_cm360
-      pip_url: "git+https://github.com/Together-NZ/tap-cm360.git"  # or your repo path, or something like '-e .'
+      pip_url: "-e ."  # or your repo path, or something like '-e .'
       # Include needed dependencies:
       pip_dependencies:
         - google-api-python-client
@@ -16,9 +16,11 @@ plugins:
         - httplib2
         - csvkit  # optional, if you want advanced CSV usage
       config:
-        profile_id: ${PROFILE_ID}
+        profile_id: "9840205"
+        secret-content: ${SECRET}
+        credential: ${CREDENTIALS}
         oauth_scopes:
-          - ${SCOPE}
+          - "https://www.googleapis.com/auth/dfareporting"
         start_date: ${START_DATE}
 
   loaders:

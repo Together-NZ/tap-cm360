@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from google.auth.transport.requests import Request
 from google.cloud import secretmanager
 import tempfile
-from tap_cm360.auth import authorize_in_memory
+
 class cm360Stream(Stream):
     """Stream class for Campaign Manager 360 (CM360) API."""
     
@@ -24,8 +24,8 @@ class cm360Stream(Stream):
     records_jsonpath = "$[*]"  # Adjust based on API's response structure
     next_page_token_jsonpath = None  # Assuming no pagination
 
-    def __init__(self, tap, name=None, schema=None, path=None):
-        super().__init__(tap, name, schema, path)
+    def __init__(self,  name=None, schema=None, path=None):
+        super().__init__( name, schema)
         self.version = 'v4'
 
     @property
@@ -60,14 +60,7 @@ class cm360Stream(Stream):
         )
 
         return flow
-    def generate_credential(self, context: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        config = self.config
-            # Example usage
-        SECRET_ID = "airflow-variables-meltano-cm360"
-        PROJECT_ID = "739679429225"
-        SCOPES = ["https://www.googleapis.com/auth/dfareporting"]
-        secret_content = self.fetch_secret_from_secret_manager(SECRET_ID, PROJECT_ID)
-        return authorize_in_memory(secret_content, SCOPES)
+
 
 
 

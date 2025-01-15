@@ -1,257 +1,88 @@
-import os
-import time
-import io
+"""Stream type classes for tap-dv360."""
+
+from __future__ import annotations
+from singer_sdk.typing import PropertiesList, Property, StringType, DateTimeType, NumberType
+import typing as t
+from importlib import resources
+from typing import Iterable, Dict, Optional, Any, List
+
+from singer_sdk import typing as th  # JSON Schema typing helpers
+from datetime import datetime, timedelta
+from tap_cm360.client import cm360Stream,GoogleOAuthAuthenticator
 import csv
-import datetime
-import httplib2
-from datetime import date, timedelta,datetime
+import json
+import logging
+import requests
+from typing import Iterable, Dict, Any
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
-# Google & OAuth
-from oauth2client.file import Storage
-from oauth2client import tools, client
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+    # Add a console handler to see logs in the console
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+logger.addHandler(console_handler)
+current_date = datetime.now()
 
-# Singer SDK
-from singer_sdk import Tap, Stream
-from singer_sdk import typing as th  # JSON schema typing helpers
-import jsonschema
-from jsonschema import validate
-import tempfile
-from google.cloud import secretmanager
-from oauth2client import client
-from tap_cm360.client import cm360Stream
-class CM360ReportStream(cm360Stream):
-    """Streamer that downloads and parses a CM360 CSV report."""
 
-    name = "cm360_report_stream"
-    # Minimal schema. Adjust to your needs:
-    schema = th.PropertiesList(
-        th.Property("placementId", th.StringType, description="Unique ID for the placement"),
-        th.Property("advertiser", th.StringType, description="Name of the advertiser"),
-        th.Property("creativeType", th.StringType, description="Type of creative (e.g., Banner, Video)"),
-        th.Property("creativeId", th.StringType, description="Unique ID for the creative"),
-        th.Property("creative", th.StringType, description="Name or identifier for the creative"),
-        th.Property("advertiserId", th.StringType, description="Unique ID for the advertiser"),
-        th.Property("campaignEndDate", th.StringType, description="End date of the campaign in YYYY-MM-DD format"),
-        th.Property("campaignId", th.StringType, description="Unique ID for the campaign"),
-        th.Property("campaign", th.StringType, description="Name of the campaign"),
-        th.Property("campaignStartDate", th.StringType, description="Start date of the campaign in YYYY-MM-DD format"),
-        th.Property("clickThroughUrl", th.StringType, description="URL associated with the click-through action"),
-        th.Property("date", th.StringType, description="Date of the data in YYYY-MM-DD format"),
-        th.Property("placementCostStructure", th.StringType, description="Cost structure for the placement (e.g., CPM, CPC)"),
-        th.Property("placementEndDate", th.StringType, description="End date of the placement in YYYY-MM-DD format"),
-        th.Property("placement", th.StringType, description="Name or identifier for the placement"),
-        th.Property("packageRoadblockId", th.StringType, description="Unique ID for the package or roadblock"),
-        th.Property("packageRoadblock", th.StringType, description="Name or identifier for the package or roadblock"),
-        th.Property("placementSize", th.StringType, description="Size of the placement (e.g., 300x250)"),
-        th.Property("placementStartDate", th.StringType, description="Start date of the placement in YYYY-MM-DD format"),
-        th.Property("placementStrategy", th.StringType, description="Strategy used for the placement"),
-        th.Property("siteKeyname", th.StringType, description="Key name of the site for the placement"),
-        th.Property("clicks", th.IntegerType, description="Number of clicks"),
-        th.Property("impressions", th.IntegerType, description="Number of impressions")
-    ).to_dict()
 
-    def get_records(self, context):
-        """Main function to create/run/download the CM360 report and yield row data."""
-        config = self.config
-        credentials,http = self.generate_credentials(context)
-        # 2. Build CM360 (a.k.a. DFA Reporting) service
-        service = build("dfareporting", "v4", http=http)
+class CM360StandardStream(cm360Stream):
+    def __init__(self, tap, name=None, schema=None, path=None):
+        super().__init__(tap, name, schema, path)
+        self.shared_data = tap.shared_data
+    name = "cm360_standard"
+    path = f'https://www.googleapis.com/auth/dfareporting/v4'
+    replication_key = "Date"
+    records_jsonpath = "$[*]"  # Adjust based on DV360 API's response
+    next_page_token_jsonpath = None  # Assuming no pagination for this example
+    @property
+    def authenticator(self):
+        self.google_account = self.config.get("google_account")
+        return GoogleOAuthAuthenticator(self.google_account)
 
-        profile_id = config["profile_id"]  # Must be a string
-        str_start_date = config["start_date"]  # e.g. "2025-01-14"
-        parsed_datetime = datetime.strptime(str_start_date, "%Y-%m-%d")  # Convert string → datetime
-        start_date = parsed_datetime.date()  # Extract date object
-        if not config.get("end_date"):
-            end_date = date.today()
-        else:
-            end_date = config["end_date"]
 
-        # 3. Prepare a new (or updated) report definition
-        report_body = {
-            'name': 'Example Standard Report',
-            'type': 'STANDARD',
-            'fileName': 'example_report',
-            'format': 'CSV',
-            'criteria': {
-                'dateRange': {
-                    'startDate': start_date.strftime('%Y-%m-%d'),
-                    'endDate': end_date.strftime('%Y-%m-%d')
-                },
-                'dimensions': [{
-                    'name':'placementId'
-                },
-                {'name':'advertiser'},
-                {'name':'creativeType'},
-                {'name':'creativeId'},
-                {'name':'creative'},
-                {'name':'advertiserId'},
-                {'name':'campaignEndDate'},
-                {'name':'campaignId'},
-                {'name':'campaign'},
-                {'name':'campaignStartDate'},
-                {'name':'clickThroughUrl'},
-                {'name':'date'},
-                {'name':'placementCostStructure'},
-                {'name':'placementEndDate'},
-                {'name':'placement'},
-                {'name':'packageRoadblockId'},
-                {'name':'packageRoadblock'},
-                {'name':'placementSize'},
-                {'name':'placementStartDate'},
-                {'name':'placementStrategy'},
-                {'name':'siteKeyname'}],
-                'metricNames': ['clicks', 'impressions']
-            }
-        }
 
-        # 4. Insert & run the report
-        inserted_report = service.reports().insert(
-            profileId=profile_id, body=report_body
-        ).execute()
+    def _parse_csv_to_records(self, csv_content: str) -> Iterable[Dict[str, Any]]:
+        """Convert CSV content into a list of records, dynamically extracting metric names."""
+        logger.info("Starting to parse CSV content.")
 
-        run_response = service.reports().run(
-            profileId=profile_id, reportId=inserted_report["id"]
-        ).execute()
-
-        report_file_id = run_response["id"]
-
-        # 5. Poll until ready (or fail)
-        start_time = time.time()
-        max_wait = 3600
-        sleep = 20
-        max_sleep = 300
-
-        def next_sleep_interval(s):
-            return min(s * 2, max_sleep)
-
-        while True:
-            # Get file info
-            status_response = service.files().get(
-                reportId=inserted_report["id"],
-                fileId=report_file_id
-            ).execute()
-
-            status = status_response["status"]
-
-            # Success: File is available
-            if status == "REPORT_AVAILABLE":
-                self.logger.info("Report is ready for download.")
-                break
-
-            # Still processing or queued
-            elif status in ("PROCESSING", "QUEUED"):
-                pass  # just keep waiting
-
-            # Failure or unknown status
-            else:
-                self.logger.error(f"Report failed with status: {status}")
-                return
-
-            # Check total wait time
-            elapsed = time.time() - start_time
-            if elapsed > max_wait:
-                self.logger.error(
-                    f"Report took too long to process. Waited {elapsed:.1f} seconds."
-                )
-                return
-
-            # Otherwise, sleep with exponential backoff
-            self.logger.info(f"Report status is {status}; sleeping {sleep} seconds.")
-            time.sleep(sleep)
-            sleep = next_sleep_interval(sleep)
-
-        # 6. Download the CSV file into memory
-        request = service.files().get_media(
-            reportId=inserted_report["id"], fileId=report_file_id
-        )
-        buf = io.BytesIO()
-        downloader = MediaIoBaseDownload(buf, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                self.logger.info(f"Download {int(status.progress() * 100)}%.")
-
-        # Define the schema fields in order
-        schema_fields = [
-            "placementId", "advertiser", "creativeType", "creativeId", "creative",
-            "advertiserId", "campaignEndDate", "campaignId", "campaign", "campaignStartDate",
-            "clickThroughUrl", "date", "placementCostStructure", "placementEndDate", "placement",
-            "packageRoadblockId", "packageRoadblock", "placementSize", "placementStartDate",
-            "placementStrategy", "siteKeyname", "clicks", "impressions"
-        ]
-
-        # Define the JSON schema
-        schema = {
-            "properties": {
-                "placementId": {"type": "string"},
-                "advertiser": {"type": "string"},
-                "creativeType": {"type": "string"},
-                "creativeId": {"type": "string"},
-                "creative": {"type": "string"},
-                "advertiserId": {"type": "string"},
-                "campaignEndDate": {"type": "string"},
-                "campaignId": {"type": "string"},
-                "campaign": {"type": "string"},
-                "campaignStartDate": {"type": "string"},
-                "clickThroughUrl": {"type": "string"},
-                "date": {"type": "string"},
-                "placementCostStructure": {"type": "string"},
-                "placementEndDate": {"type": "string"},
-                "placement": {"type": "string"},
-                "packageRoadblockId": {"type": "string"},
-                "packageRoadblock": {"type": "string"},
-                "placementSize": {"type": "string"},
-                "placementStartDate": {"type": "string"},
-                "placementStrategy": {"type": "string"},
-                "siteKeyname": {"type": "string"},
-                "clicks": {"type": "integer"},
-                "impressions": {"type": "integer"}
-            },
-            "required": schema_fields
-        }
-        buf.seek(0)
-        # Verify buffer content
-        buf.seek(0)  # Reset buffer
-
-        csv_reader = csv.reader(io.TextIOWrapper(buf, "utf-8"))
-        start_reading = False  # Flag to start reading data rows
-
-        for row in csv_reader:
-            # Check for "Report Fields" marker to start processing rows
-            if not start_reading:
-                if  "Placement ID" in row:  # Strict header detection
-                    start_reading = True
-                continue
-
-            # Ensure the row has the correct number of fields
-            if len(row) != len(schema_fields):
-                continue
-
-            # Map the row values to schema fields using index
-            row_dict = {}
-            for i, value in enumerate(row):
-                try:
-                    if schema_fields[i] in ["clicks", "impressions"]:
-                        row_dict[schema_fields[i]] = int(value)
-                    else:
-                        row_dict[schema_fields[i]] = value
-                except ValueError:
-                    row_dict[schema_fields[i]] = None  # Handle invalid numbers
-            if row_dict.get("placementId") == "Grand Total":
-                print("Skipping row:", row_dict)  # Debug skipped rows
-                continue
+        # If the content looks like JSON, extract the `googleCloudStoragePath`
+        if csv_content.strip().startswith("{"):
+            logger.info("Response appears to be JSON; attempting to extract CSV URL.")
             try:
-                # Validate the mapped row against the schema
-                validate(instance=row_dict, schema=schema)
+                response_json = json.loads(csv_content)
+                csv_url = response_json.get("metadata", {}).get("googleCloudStoragePath")
+                if not csv_url:
+                    logger.error("CSV URL not found in response.")
+                    raise ValueError("CSV URL not found in response.")
 
-                yield row_dict  # Yield the validated row as a dictionary
-            except jsonschema.exceptions.ValidationError as e:
-                # Handle validation errors (e.g., log or skip invalid rows)
-                print(f"Validation error in row {row}: {e}")
+                logger.info(f"Downloading CSV from URL: {csv_url}")
+                response = requests.get(csv_url)
+                if response.status_code != 200:
+                    logger.error(f"Failed to download CSV: {response.status_code} - {response.text}")
+                    raise RuntimeError(f"Failed to download CSV: {response.status_code} - {response.text}")
 
+                csv_content = response.text  # Replace with downloaded CSV content
+                logger.info("CSV content downloaded successfully.")
 
+            except json.JSONDecodeError as e:
+                logger.exception("Failed to decode JSON response.")
+                raise RuntimeError("Invalid JSON in API response.") from e
+
+        # Parse the CSV content
+        try:
+            filters=set()
+            reader = csv.DictReader(csv_content.splitlines())
+            logger.info("Parsing CSV content into rows.")
+            # Reinitialize reader to start from the beginning
+            reader = csv.DictReader(csv_content.splitlines())            
+            self.shared_data["filters"] = filters
+            self._tap.shared_data["filters"] = filters
+            # Process all rows and extract metric data
+            for row in reader:
+                yield row
+            
+        except Exception as e:
+            logger.exception("Error occurred while parsing CSV content.")
+            raise e
 
 
