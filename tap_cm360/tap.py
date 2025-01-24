@@ -209,7 +209,7 @@ class CM360ReportStream(Stream):
             "advertiserId", "campaignEndDate", "campaignId", "campaign", "campaignStartDate",
             "clickThroughUrl", "date", "placementCostStructure", "placementEndDate", "placement",
             "packageRoadblockId", "packageRoadblock", "placementSize", "placementStartDate",
-            "placementStrategy", "siteKeyname", "clicks", "impressions"
+            "placementStrategy", "site","siteKeyname", "clicks", "impressions"
         ]
 
         # Define the JSON schema
