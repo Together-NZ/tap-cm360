@@ -128,7 +128,8 @@ class CM360ReportStream(Stream):
                 {'name':'placementSize'},
                 {'name':'placementStartDate'},
                 {'name':'placementStrategy'},
-                {'name':'siteKeyname'}],
+                {'name':'siteKeyname'},
+                {'name':'site'}],
                 'metricNames': ['clicks', 'impressions']
             }
         }
