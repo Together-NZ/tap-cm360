@@ -48,6 +48,7 @@ class CM360ReportStream(Stream):
         th.Property("placementSize", th.StringType, description="Size of the placement (e.g., 300x250)"),
         th.Property("placementStartDate", th.StringType, description="Start date of the placement in YYYY-MM-DD format"),
         th.Property("placementStrategy", th.StringType, description="Strategy used for the placement"),
+        th.Property("site", th.StringType, description="Site Name"),
         th.Property("siteKeyname", th.StringType, description="Key name of the site for the placement"),
         th.Property("clicks", th.IntegerType, description="Number of clicks"),
         th.Property("impressions", th.IntegerType, description="Number of impressions")
@@ -128,8 +129,8 @@ class CM360ReportStream(Stream):
                 {'name':'placementSize'},
                 {'name':'placementStartDate'},
                 {'name':'placementStrategy'},
-                {'name':'siteKeyname'},
-                {'name':'site'}],
+                {'name':'site'},
+                {'name':'siteKeyname'}],
                 'metricNames': ['clicks', 'impressions']
             }
         }
@@ -234,6 +235,7 @@ class CM360ReportStream(Stream):
                 "placementSize": {"type": "string"},
                 "placementStartDate": {"type": "string"},
                 "placementStrategy": {"type": "string"},
+                "site:": {"type": "string"},
                 "siteKeyname": {"type": "string"},
                 "clicks": {"type": "integer"},
                 "impressions": {"type": "integer"}
