@@ -30,7 +30,7 @@ class CM360StandardStream(cm360Stream):
         super().__init__(tap, name, schema, path)
         self.shared_data = tap.shared_data
     name = "cm360_standard"
-    path = f'https://www.googleapis.com/auth/dfareporting/v4'
+    path = f'https://www.googleapis.com/auth/dfareporting/v5'
     replication_key = "Date"
     records_jsonpath = "$[*]"  # Adjust based on DV360 API's response
     next_page_token_jsonpath = None  # Assuming no pagination for this example
