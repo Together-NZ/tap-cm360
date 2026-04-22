@@ -85,7 +85,7 @@ class CM360ReportStream(Stream):
         # Authorize an HTTP object with the credentials
         http = credentials.authorize(httplib2.Http())
         # 2. Build CM360 (a.k.a. DFA Reporting) service
-        service = build("dfareporting", "v4", http=http)
+        service = build("dfareporting", "v5", http=http)
 
         profile_id = config["profile_id"]  # Must be a string
         str_start_date = config["start_date"]  # e.g. "2025-01-14"
