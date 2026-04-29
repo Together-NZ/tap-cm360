@@ -30,6 +30,8 @@ class CM360ReportStream(Stream):
     schema = th.PropertiesList(
         th.Property("placementId", th.StringType, description="Unique ID for the placement"),
         th.Property("advertiser", th.StringType, description="Name of the advertiser"),
+        th.Property("dv360CreativeId", th.StringType, description="DV360 Creative ID"),
+        th.Property("dv360Creative", th.StringType, description="DV360 Creative name"),
         th.Property("creativeType", th.StringType, description="Type of creative (e.g., Banner, Video)"),
         th.Property("creativeId", th.StringType, description="Unique ID for the creative"),
         th.Property("creative", th.StringType, description="Name or identifier for the creative"),
@@ -51,7 +53,8 @@ class CM360ReportStream(Stream):
         th.Property("site", th.StringType, description="Site Name"),
         th.Property("siteKeyname", th.StringType, description="Key name of the site for the placement"),
         th.Property("clicks", th.IntegerType, description="Number of clicks"),
-        th.Property("impressions", th.IntegerType, description="Number of impressions")
+        th.Property("impressions", th.IntegerType, description="Number of impressions"),
+        th.Property("dv360Cost", th.NumberType, description="DV360 Cost in account currency"),
     ).to_dict()
 
     def fetch_secret_from_secret_manager(self, secret_id, project_id, version_id="1"):
@@ -111,6 +114,8 @@ class CM360ReportStream(Stream):
                     'name':'placementId'
                 },
                 {'name':'advertiser'},
+                {'name': 'dv360CreativeId'},
+                {'name': 'dv360Creative'},
                 {'name':'creativeType'},
                 {'name':'creativeId'},
                 {'name':'creative'},
@@ -131,7 +136,7 @@ class CM360ReportStream(Stream):
                 {'name':'placementStrategy'},
                 {'name':'site'},
                 {'name':'siteKeyname'}],
-                'metricNames': ['clicks', 'impressions']
+                'metricNames': ['clicks', 'impressions','dv360Cost']
             }
         }
 
@@ -203,20 +208,23 @@ class CM360ReportStream(Stream):
             if status:
                 self.logger.info(f"Download {int(status.progress() * 100)}%.")
 
-        # Define the schema fields in order
+        # Define the schema fields in order matching report_body dimensions + metrics
         schema_fields = [
-            "placementId", "advertiser", "creativeType", "creativeId", "creative",
+            "placementId", "advertiser", "dv360CreativeId", "dv360Creative",
+            "creativeType", "creativeId", "creative",
             "advertiserId", "campaignEndDate", "campaignId", "campaign", "campaignStartDate",
             "clickThroughUrl", "date", "placementCostStructure", "placementEndDate", "placement",
             "packageRoadblockId", "packageRoadblock", "placementSize", "placementStartDate",
-            "placementStrategy", "site","siteKeyname", "clicks", "impressions"
+            "placementStrategy", "site", "siteKeyname", "clicks", "impressions", "dv360Cost"
         ]
 
-        # Define the JSON schema
+        # Define the JSON schema for row validation
         schema = {
             "properties": {
                 "placementId": {"type": "string"},
                 "advertiser": {"type": "string"},
+                "dv360CreativeId": {"type": "string"},
+                "dv360Creative": {"type": "string"},
                 "creativeType": {"type": "string"},
                 "creativeId": {"type": "string"},
                 "creative": {"type": "string"},
@@ -235,10 +243,11 @@ class CM360ReportStream(Stream):
                 "placementSize": {"type": "string"},
                 "placementStartDate": {"type": "string"},
                 "placementStrategy": {"type": "string"},
-                "site:": {"type": "string"},
+                "site": {"type": "string"},
                 "siteKeyname": {"type": "string"},
                 "clicks": {"type": "integer"},
-                "impressions": {"type": "integer"}
+                "impressions": {"type": "integer"},
+                "dv360Cost": {"type": ["number", "null"]}
             },
             "required": schema_fields
         }
@@ -266,10 +275,12 @@ class CM360ReportStream(Stream):
                 try:
                     if schema_fields[i] in ["clicks", "impressions"]:
                         row_dict[schema_fields[i]] = int(value)
+                    elif schema_fields[i] in ["dv360Cost"]:
+                        row_dict[schema_fields[i]] = float(value) if value else None
                     else:
                         row_dict[schema_fields[i]] = value
-                except ValueError:
-                    row_dict[schema_fields[i]] = None  # Handle invalid numbers
+                except (ValueError, TypeError):
+                    row_dict[schema_fields[i]] = None
 
             try:
                 # Validate the mapped row against the schema
