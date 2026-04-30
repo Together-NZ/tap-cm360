@@ -32,6 +32,8 @@ class CM360ReportStream(Stream):
         th.Property("advertiser", th.StringType, description="Name of the advertiser"),
         th.Property("dv360CreativeId", th.StringType, description="DV360 Creative ID"),
         th.Property("dv360Creative", th.StringType, description="DV360 Creative name"),
+        th.Property("dv360LineItem", th.StringType, description="DV360 Line Item name"),
+        th.Property("dv360LineItemId", th.StringType, description="DV360 Line Item ID"),
         th.Property("creativeType", th.StringType, description="Type of creative (e.g., Banner, Video)"),
         th.Property("creativeId", th.StringType, description="Unique ID for the creative"),
         th.Property("creative", th.StringType, description="Name or identifier for the creative"),
@@ -55,6 +57,11 @@ class CM360ReportStream(Stream):
         th.Property("clicks", th.IntegerType, description="Number of clicks"),
         th.Property("impressions", th.IntegerType, description="Number of impressions"),
         th.Property("dv360Cost", th.NumberType, description="DV360 Cost in account currency"),
+        th.Property("totalConversions", th.NumberType, description="Total conversions"),
+        th.Property("richMediaVideoFirstQuartileCompletes", th.IntegerType, description="Video first quartile completions"),
+        th.Property("richMediaVideoMidpoints", th.IntegerType, description="Video midpoint completions"),
+        th.Property("richMediaVideoThirdQuartileCompletes", th.IntegerType, description="Video third quartile completions"),
+        th.Property("richMediaVideoCompletions", th.IntegerType, description="Video completions"),
     ).to_dict()
 
     def fetch_secret_from_secret_manager(self, secret_id, project_id, version_id="1"):
@@ -116,6 +123,8 @@ class CM360ReportStream(Stream):
                 {'name':'advertiser'},
                 {'name': 'dv360CreativeId'},
                 {'name': 'dv360Creative'},
+                {'name': 'dv360LineItem'},
+                {'name': 'dv360LineItemId'},
                 {'name':'creativeType'},
                 {'name':'creativeId'},
                 {'name':'creative'},
@@ -136,7 +145,9 @@ class CM360ReportStream(Stream):
                 {'name':'placementStrategy'},
                 {'name':'site'},
                 {'name':'siteKeyname'}],
-                'metricNames': ['clicks', 'impressions','dv360Cost']
+                'metricNames': ['clicks', 'impressions', 'dv360Cost', 'totalConversions',
+                               'richMediaVideoFirstQuartileCompletes', 'richMediaVideoMidpoints',
+                               'richMediaVideoThirdQuartileCompletes', 'richMediaVideoCompletions']
             }
         }
 
@@ -211,11 +222,13 @@ class CM360ReportStream(Stream):
         # Define the schema fields in order matching report_body dimensions + metrics
         schema_fields = [
             "placementId", "advertiser", "dv360CreativeId", "dv360Creative",
-            "creativeType", "creativeId", "creative",
+            "dv360LineItem", "dv360LineItemId", "creativeType", "creativeId", "creative",
             "advertiserId", "campaignEndDate", "campaignId", "campaign", "campaignStartDate",
             "clickThroughUrl", "date", "placementCostStructure", "placementEndDate", "placement",
             "packageRoadblockId", "packageRoadblock", "placementSize", "placementStartDate",
-            "placementStrategy", "site", "siteKeyname", "clicks", "impressions", "dv360Cost"
+            "placementStrategy", "site", "siteKeyname", "clicks", "impressions", "dv360Cost",
+            "totalConversions", "richMediaVideoFirstQuartileCompletes", "richMediaVideoMidpoints",
+            "richMediaVideoThirdQuartileCompletes", "richMediaVideoCompletions"
         ]
 
         # Define the JSON schema for row validation
@@ -225,6 +238,8 @@ class CM360ReportStream(Stream):
                 "advertiser": {"type": "string"},
                 "dv360CreativeId": {"type": "string"},
                 "dv360Creative": {"type": "string"},
+                "dv360LineItem": {"type": "string"},
+                "dv360LineItemId": {"type": "string"},
                 "creativeType": {"type": "string"},
                 "creativeId": {"type": "string"},
                 "creative": {"type": "string"},
@@ -247,7 +262,12 @@ class CM360ReportStream(Stream):
                 "siteKeyname": {"type": "string"},
                 "clicks": {"type": "integer"},
                 "impressions": {"type": "integer"},
-                "dv360Cost": {"type": ["number", "null"]}
+                "dv360Cost": {"type": ["number", "null"]},
+                "totalConversions": {"type": ["number", "null"]},
+                "richMediaVideoFirstQuartileCompletes": {"type": ["integer", "null"]},
+                "richMediaVideoMidpoints": {"type": ["integer", "null"]},
+                "richMediaVideoThirdQuartileCompletes": {"type": ["integer", "null"]},
+                "richMediaVideoCompletions": {"type": ["integer", "null"]}
             },
             "required": schema_fields
         }
@@ -273,9 +293,13 @@ class CM360ReportStream(Stream):
             row_dict = {}
             for i, value in enumerate(row):
                 try:
-                    if schema_fields[i] in ["clicks", "impressions"]:
-                        row_dict[schema_fields[i]] = int(value)
-                    elif schema_fields[i] in ["dv360Cost"]:
+                    if schema_fields[i] in ["clicks", "impressions",
+                                            "richMediaVideoFirstQuartileCompletes",
+                                            "richMediaVideoMidpoints",
+                                            "richMediaVideoThirdQuartileCompletes",
+                                            "richMediaVideoCompletions"]:
+                        row_dict[schema_fields[i]] = int(value) if value else None
+                    elif schema_fields[i] in ["dv360Cost", "totalConversions"]:
                         row_dict[schema_fields[i]] = float(value) if value else None
                     else:
                         row_dict[schema_fields[i]] = value
