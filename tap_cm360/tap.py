@@ -62,6 +62,8 @@ class CM360ReportStream(Stream):
         th.Property("richMediaVideoMidpoints", th.IntegerType, description="Video midpoint completions"),
         th.Property("richMediaVideoThirdQuartileCompletes", th.IntegerType, description="Video third quartile completions"),
         th.Property("richMediaVideoCompletions", th.IntegerType, description="Video completions"),
+        th.Property("richMediaVideoPlays", th.IntegerType, description="Video plays"),
+        th.Property("richMediaTrueViewViews", th.IntegerType, description="Video views"),
     ).to_dict()
 
     def fetch_secret_from_secret_manager(self, secret_id, project_id, version_id="1"):
@@ -147,7 +149,8 @@ class CM360ReportStream(Stream):
                 {'name':'siteKeyname'}],
                 'metricNames': ['clicks', 'impressions', 'dv360Cost', 'totalConversions',
                                'richMediaVideoFirstQuartileCompletes', 'richMediaVideoMidpoints',
-                               'richMediaVideoThirdQuartileCompletes', 'richMediaVideoCompletions']
+                               'richMediaVideoThirdQuartileCompletes', 'richMediaVideoCompletions',
+                               'richMediaVideoPlays', 'richMediaTrueViewViews']
             }
         }
 
@@ -228,7 +231,8 @@ class CM360ReportStream(Stream):
             "packageRoadblockId", "packageRoadblock", "placementSize", "placementStartDate",
             "placementStrategy", "site", "siteKeyname", "clicks", "impressions", "dv360Cost",
             "totalConversions", "richMediaVideoFirstQuartileCompletes", "richMediaVideoMidpoints",
-            "richMediaVideoThirdQuartileCompletes", "richMediaVideoCompletions"
+            "richMediaVideoThirdQuartileCompletes", "richMediaVideoCompletions",
+            "richMediaVideoPlays", "richMediaTrueViewViews"
         ]
 
         # Define the JSON schema for row validation
@@ -267,7 +271,9 @@ class CM360ReportStream(Stream):
                 "richMediaVideoFirstQuartileCompletes": {"type": ["integer", "null"]},
                 "richMediaVideoMidpoints": {"type": ["integer", "null"]},
                 "richMediaVideoThirdQuartileCompletes": {"type": ["integer", "null"]},
-                "richMediaVideoCompletions": {"type": ["integer", "null"]}
+                "richMediaVideoCompletions": {"type": ["integer", "null"]},
+                "richMediaVideoPlays": {"type": ["integer", "null"]},
+                "richMediaTrueViewViews": {"type": ["integer", "null"]}
             },
             "required": schema_fields
         }
@@ -297,7 +303,9 @@ class CM360ReportStream(Stream):
                                             "richMediaVideoFirstQuartileCompletes",
                                             "richMediaVideoMidpoints",
                                             "richMediaVideoThirdQuartileCompletes",
-                                            "richMediaVideoCompletions"]:
+                                            "richMediaVideoCompletions",
+                                            "richMediaVideoPlays",
+                                            "richMediaTrueViewViews"]:
                         row_dict[schema_fields[i]] = int(value) if value else None
                     elif schema_fields[i] in ["dv360Cost", "totalConversions"]:
                         row_dict[schema_fields[i]] = float(value) if value else None
