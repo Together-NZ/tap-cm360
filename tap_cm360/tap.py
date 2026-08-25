@@ -22,6 +22,176 @@ import tempfile
 from google.cloud import secretmanager
 from oauth2client import client
 
+REPORT_DIMENSIONS = [
+    "placementId", "advertiser", "dv360CreativeId", "dv360Creative",
+    "dv360LineItem", "dv360LineItemId", "creativeType", "creativeId", "creative",
+    "advertiserId", "campaignEndDate", "campaignId", "campaign", "campaignStartDate",
+    "clickThroughUrl", "date", "placementCostStructure", "placementEndDate", "placement",
+    "packageRoadblockId", "packageRoadblock", "placementSize", "placementStartDate",
+    "placementStrategy", "site", "siteKeyname",
+]
+REPORT_METRICS = [
+    "clicks", "impressions", "dv360Cost", "totalConversions",
+    "richMediaVideoFirstQuartileCompletes", "richMediaVideoMidpoints",
+    "richMediaVideoThirdQuartileCompletes", "richMediaVideoCompletions",
+    "richMediaVideoPlays", "richMediaTrueViewViews",
+]
+INTEGER_METRICS = {
+    "clicks", "impressions", "richMediaVideoFirstQuartileCompletes",
+    "richMediaVideoMidpoints", "richMediaVideoThirdQuartileCompletes",
+    "richMediaVideoCompletions", "richMediaVideoPlays", "richMediaTrueViewViews",
+}
+FLOAT_METRICS = {"dv360Cost", "totalConversions"}
+
+
+def _report_fields(include_dv360: bool):
+    if include_dv360:
+        return list(REPORT_DIMENSIONS), list(REPORT_METRICS)
+    dimensions = [name for name in REPORT_DIMENSIONS if "dv360" not in name.lower()]
+    metrics = [name for name in REPORT_METRICS if "dv360" not in name.lower()]
+    return dimensions, metrics
+
+
+def _build_validation_schema(schema_fields):
+    properties = {}
+    for name in schema_fields:
+        if name in INTEGER_METRICS:
+            properties[name] = {"type": ["integer", "null"]}
+        elif name in FLOAT_METRICS:
+            properties[name] = {"type": ["number", "null"]}
+        else:
+            properties[name] = {"type": "string"}
+    return {"properties": properties, "required": schema_fields}
+
+
+def _fetch_report_records(stream, include_dv360: bool):
+    """Create/run/download a CM360 CSV report and yield row data."""
+    config = stream.config
+    credentials_data = config["credential"]
+
+    if isinstance(credentials_data, str):
+        credentials_data = json.loads(credentials_data)
+
+    if "user_agent" not in credentials_data:
+        credentials_data["user_agent"] = "tap-cm360/1.0"
+
+    credentials = OAuth2Credentials.from_json(json.dumps(credentials_data))
+    http = credentials.authorize(httplib2.Http())
+    service = build("dfareporting", "v5", http=http)
+
+    profile_id = config["profile_id"]
+    parsed_datetime = datetime.strptime(config["start_date"], "%Y-%m-%d")
+    start_date = parsed_datetime.date()
+    end_date = config.get("end_date") or date.today()
+
+    dimension_names, metric_names = _report_fields(include_dv360)
+    report_body = {
+        "name": f"{stream.name} Standard Report",
+        "type": "STANDARD",
+        "fileName": f"{stream.name}_report",
+        "format": "CSV",
+        "criteria": {
+            "dateRange": {
+                "startDate": start_date.strftime("%Y-%m-%d"),
+                "endDate": end_date.strftime("%Y-%m-%d"),
+            },
+            "dimensions": [{"name": name} for name in dimension_names],
+            "metricNames": metric_names,
+        },
+    }
+
+    inserted_report = service.reports().insert(
+        profileId=profile_id, body=report_body
+    ).execute()
+
+    run_response = service.reports().run(
+        profileId=profile_id, reportId=inserted_report["id"]
+    ).execute()
+
+    report_file_id = run_response["id"]
+
+    start_time = time.time()
+    max_wait = 3600
+    sleep = 20
+    max_sleep = 300
+
+    def next_sleep_interval(current_sleep):
+        return min(current_sleep * 2, max_sleep)
+
+    while True:
+        status_response = service.files().get(
+            reportId=inserted_report["id"],
+            fileId=report_file_id,
+        ).execute()
+
+        status = status_response["status"]
+
+        if status == "REPORT_AVAILABLE":
+            stream.logger.info("Report is ready for download.")
+            break
+
+        if status not in ("PROCESSING", "QUEUED"):
+            stream.logger.error(f"Report failed with status: {status}")
+            return
+
+        elapsed = time.time() - start_time
+        if elapsed > max_wait:
+            stream.logger.error(
+                f"Report took too long to process. Waited {elapsed:.1f} seconds."
+            )
+            return
+
+        stream.logger.info(f"Report status is {status}; sleeping {sleep} seconds.")
+        time.sleep(sleep)
+        sleep = next_sleep_interval(sleep)
+
+    request = service.files().get_media(
+        reportId=inserted_report["id"], fileId=report_file_id
+    )
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        status, done = downloader.next_chunk()
+        if status:
+            stream.logger.info(f"Download {int(status.progress() * 100)}%.")
+
+    schema_fields = dimension_names + metric_names
+    validation_schema = _build_validation_schema(schema_fields)
+
+    buf.seek(0)
+    csv_reader = csv.reader(io.TextIOWrapper(buf, "utf-8"))
+    start_reading = False
+
+    for row in csv_reader:
+        if not start_reading:
+            if "Placement ID" in row:
+                start_reading = True
+            continue
+
+        if len(row) != len(schema_fields):
+            continue
+
+        row_dict = {}
+        for i, value in enumerate(row):
+            field_name = schema_fields[i]
+            try:
+                if field_name in INTEGER_METRICS:
+                    row_dict[field_name] = int(value) if value else None
+                elif field_name in FLOAT_METRICS:
+                    row_dict[field_name] = float(value) if value else None
+                else:
+                    row_dict[field_name] = value
+            except (ValueError, TypeError):
+                row_dict[field_name] = None
+
+        try:
+            validate(instance=row_dict, schema=validation_schema)
+            yield row_dict
+        except jsonschema.exceptions.ValidationError as e:
+            print(f"Validation error in row {row}: {e}")
+
+
 class CM360ReportStream(Stream):
     """Streamer that downloads and parses a CM360 CSV report."""
 
@@ -80,252 +250,27 @@ class CM360ReportStream(Stream):
 
     def get_records(self, context):
         """Main function to create/run/download the CM360 report and yield row data."""
-        config = self.config
-        credentials_data = config["credential"]
-
-        # Ensure credentials_data is a dictionary
-        if isinstance(credentials_data, str):
-            credentials_data = json.loads(credentials_data)
-
-        # Add a user_agent field if it's missing
-        if "user_agent" not in credentials_data:
-            credentials_data["user_agent"] = "tap-cm360/1.0"
-
-        # Convert the dictionary back to JSON and create an OAuth2Credentials object
-        credentials = OAuth2Credentials.from_json(json.dumps(credentials_data))
-
-        # Authorize an HTTP object with the credentials
-        http = credentials.authorize(httplib2.Http())
-        # 2. Build CM360 (a.k.a. DFA Reporting) service
-        service = build("dfareporting", "v5", http=http)
-
-        profile_id = config["profile_id"]  # Must be a string
-        str_start_date = config["start_date"]  # e.g. "2025-01-14"
-        parsed_datetime = datetime.strptime(str_start_date, "%Y-%m-%d")  # Convert string → datetime
-        start_date = parsed_datetime.date()  # Extract date object
-        if not config.get("end_date"):
-            end_date = date.today()
-        else:
-            end_date = config["end_date"]
-
-        # 3. Prepare a new (or updated) report definition
-        report_body = {
-            'name': 'Example Standard Report',
-            'type': 'STANDARD',
-            'fileName': 'example_report',
-            'format': 'CSV',
-            'criteria': {
-                'dateRange': {
-                    'startDate': start_date.strftime('%Y-%m-%d'),
-                    'endDate': end_date.strftime('%Y-%m-%d')
-                },
-                'dimensions': [{
-                    'name':'placementId'
-                },
-                {'name':'advertiser'},
-                {'name': 'dv360CreativeId'},
-                {'name': 'dv360Creative'},
-                {'name': 'dv360LineItem'},
-                {'name': 'dv360LineItemId'},
-                {'name':'creativeType'},
-                {'name':'creativeId'},
-                {'name':'creative'},
-                {'name':'advertiserId'},
-                {'name':'campaignEndDate'},
-                {'name':'campaignId'},
-                {'name':'campaign'},
-                {'name':'campaignStartDate'},
-                {'name':'clickThroughUrl'},
-                {'name':'date'},
-                {'name':'placementCostStructure'},
-                {'name':'placementEndDate'},
-                {'name':'placement'},
-                {'name':'packageRoadblockId'},
-                {'name':'packageRoadblock'},
-                {'name':'placementSize'},
-                {'name':'placementStartDate'},
-                {'name':'placementStrategy'},
-                {'name':'site'},
-                {'name':'siteKeyname'}],
-                'metricNames': ['clicks', 'impressions', 'dv360Cost', 'totalConversions',
-                               'richMediaVideoFirstQuartileCompletes', 'richMediaVideoMidpoints',
-                               'richMediaVideoThirdQuartileCompletes', 'richMediaVideoCompletions',
-                               'richMediaVideoPlays', 'richMediaTrueViewViews']
-            }
-        }
-
-        # 4. Insert & run the report
-        inserted_report = service.reports().insert(
-            profileId=profile_id, body=report_body
-        ).execute()
-
-        run_response = service.reports().run(
-            profileId=profile_id, reportId=inserted_report["id"]
-        ).execute()
-
-        report_file_id = run_response["id"]
-
-        # 5. Poll until ready (or fail)
-        start_time = time.time()
-        max_wait = 3600
-        sleep = 20
-        max_sleep = 300
-
-        def next_sleep_interval(s):
-            return min(s * 2, max_sleep)
-
-        while True:
-            # Get file info
-            status_response = service.files().get(
-                reportId=inserted_report["id"],
-                fileId=report_file_id
-            ).execute()
-
-            status = status_response["status"]
-
-            # Success: File is available
-            if status == "REPORT_AVAILABLE":
-                self.logger.info("Report is ready for download.")
-                break
-
-            # Still processing or queued
-            elif status in ("PROCESSING", "QUEUED"):
-                pass  # just keep waiting
-
-            # Failure or unknown status
-            else:
-                self.logger.error(f"Report failed with status: {status}")
-                return
-
-            # Check total wait time
-            elapsed = time.time() - start_time
-            if elapsed > max_wait:
-                self.logger.error(
-                    f"Report took too long to process. Waited {elapsed:.1f} seconds."
-                )
-                return
-
-            # Otherwise, sleep with exponential backoff
-            self.logger.info(f"Report status is {status}; sleeping {sleep} seconds.")
-            time.sleep(sleep)
-            sleep = next_sleep_interval(sleep)
-
-        # 6. Download the CSV file into memory
-        request = service.files().get_media(
-            reportId=inserted_report["id"], fileId=report_file_id
-        )
-        buf = io.BytesIO()
-        downloader = MediaIoBaseDownload(buf, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                self.logger.info(f"Download {int(status.progress() * 100)}%.")
-
-        # Define the schema fields in order matching report_body dimensions + metrics
-        schema_fields = [
-            "placementId", "advertiser", "dv360CreativeId", "dv360Creative",
-            "dv360LineItem", "dv360LineItemId", "creativeType", "creativeId", "creative",
-            "advertiserId", "campaignEndDate", "campaignId", "campaign", "campaignStartDate",
-            "clickThroughUrl", "date", "placementCostStructure", "placementEndDate", "placement",
-            "packageRoadblockId", "packageRoadblock", "placementSize", "placementStartDate",
-            "placementStrategy", "site", "siteKeyname", "clicks", "impressions", "dv360Cost",
-            "totalConversions", "richMediaVideoFirstQuartileCompletes", "richMediaVideoMidpoints",
-            "richMediaVideoThirdQuartileCompletes", "richMediaVideoCompletions",
-            "richMediaVideoPlays", "richMediaTrueViewViews"
-        ]
-
-        # Define the JSON schema for row validation
-        schema = {
-            "properties": {
-                "placementId": {"type": "string"},
-                "advertiser": {"type": "string"},
-                "dv360CreativeId": {"type": "string"},
-                "dv360Creative": {"type": "string"},
-                "dv360LineItem": {"type": "string"},
-                "dv360LineItemId": {"type": "string"},
-                "creativeType": {"type": "string"},
-                "creativeId": {"type": "string"},
-                "creative": {"type": "string"},
-                "advertiserId": {"type": "string"},
-                "campaignEndDate": {"type": "string"},
-                "campaignId": {"type": "string"},
-                "campaign": {"type": "string"},
-                "campaignStartDate": {"type": "string"},
-                "clickThroughUrl": {"type": "string"},
-                "date": {"type": "string"},
-                "placementCostStructure": {"type": "string"},
-                "placementEndDate": {"type": "string"},
-                "placement": {"type": "string"},
-                "packageRoadblockId": {"type": "string"},
-                "packageRoadblock": {"type": "string"},
-                "placementSize": {"type": "string"},
-                "placementStartDate": {"type": "string"},
-                "placementStrategy": {"type": "string"},
-                "site": {"type": "string"},
-                "siteKeyname": {"type": "string"},
-                "clicks": {"type": "integer"},
-                "impressions": {"type": "integer"},
-                "dv360Cost": {"type": ["number", "null"]},
-                "totalConversions": {"type": ["number", "null"]},
-                "richMediaVideoFirstQuartileCompletes": {"type": ["integer", "null"]},
-                "richMediaVideoMidpoints": {"type": ["integer", "null"]},
-                "richMediaVideoThirdQuartileCompletes": {"type": ["integer", "null"]},
-                "richMediaVideoCompletions": {"type": ["integer", "null"]},
-                "richMediaVideoPlays": {"type": ["integer", "null"]},
-                "richMediaTrueViewViews": {"type": ["integer", "null"]}
-            },
-            "required": schema_fields
-        }
-        buf.seek(0)
-        # Verify buffer content
-        buf.seek(0)  # Reset buffer
-
-        csv_reader = csv.reader(io.TextIOWrapper(buf, "utf-8"))
-        start_reading = False  # Flag to start reading data rows
-
-        for row in csv_reader:
-            # Check for "Report Fields" marker to start processing rows
-            if not start_reading:
-                if  "Placement ID" in row:  # Strict header detection
-                    start_reading = True
-                continue
-
-            # Ensure the row has the correct number of fields
-            if len(row) != len(schema_fields):
-                continue
-
-            # Map the row values to schema fields using index
-            row_dict = {}
-            for i, value in enumerate(row):
-                try:
-                    if schema_fields[i] in ["clicks", "impressions",
-                                            "richMediaVideoFirstQuartileCompletes",
-                                            "richMediaVideoMidpoints",
-                                            "richMediaVideoThirdQuartileCompletes",
-                                            "richMediaVideoCompletions",
-                                            "richMediaVideoPlays",
-                                            "richMediaTrueViewViews"]:
-                        row_dict[schema_fields[i]] = int(value) if value else None
-                    elif schema_fields[i] in ["dv360Cost", "totalConversions"]:
-                        row_dict[schema_fields[i]] = float(value) if value else None
-                    else:
-                        row_dict[schema_fields[i]] = value
-                except (ValueError, TypeError):
-                    row_dict[schema_fields[i]] = None
-
-            try:
-                # Validate the mapped row against the schema
-                validate(instance=row_dict, schema=schema)
-
-                yield row_dict  # Yield the validated row as a dictionary
-            except jsonschema.exceptions.ValidationError as e:
-                # Handle validation errors (e.g., log or skip invalid rows)
-                print(f"Validation error in row {row}: {e}")
+        yield from _fetch_report_records(self, include_dv360=True)
 
 
+class CM360NoDv360ReportStream(Stream):
+    """CM360 report stream without DV360 dimensions or metrics."""
 
+    name = "no_dv360_stream"
 
+    @property
+    def schema(self):
+        dimension_names, metric_names = _report_fields(include_dv360=False)
+        properties = []
+        for name in dimension_names:
+            properties.append(th.Property(name, th.StringType))
+        for name in metric_names:
+            prop_type = th.IntegerType if name in INTEGER_METRICS else th.NumberType
+            properties.append(th.Property(name, prop_type))
+        return th.PropertiesList(*properties).to_dict()
+
+    def get_records(self, context):
+        yield from _fetch_report_records(self, include_dv360=False)
 
 
 # ------------------------------
@@ -375,9 +320,8 @@ class Tapcm360(Tap):
 
     def discover_streams(self):
         """Return a list of streams."""
-        return [CM360ReportStream(self)]
+        return [CM360ReportStream(self), CM360NoDv360ReportStream(self)]
 
 # If running directly (i.e., python tap_cm360.py --config …)
 if __name__ == "__main__":
     Tapcm360.cli()
-
